@@ -1,73 +1,31 @@
 import psycopg2
 import random
-import time
 
-class PostgreSQLConnection:
-    """Connection to a PostgreSQL database."""
+class PGWizardCursor:
+    """Cursor for a PostgreSQL database connection."""
 
-    def __init__(self, database, host, port, user, password, accept_writes, accept_reads, autocommit,
-                 max_connection_age_in_seconds):
-        """Set connection attributes and connect to the database."""
-        self._database = database
-        self._host = host
-        self._port = port
-        self._user = user
-        self._password = password
-        self._accept_writes = accept_writes
-        self._accept_reads = accept_reads
-        self._autocommit = autocommit
-        self._max_connection_age_in_seconds = max_connection_age_in_seconds
-        self.connect()
+    def __init__(self, connection):
+        """Open the cursor."""
+        self._cursor = connection.cursor()
 
-    def connect(self):
-        """Set a connection to the database."""
-        try:
-            self._connection = psycopg2.connect(database=self._database, host=self._host, port=self._port,
-                                                user=self._user, password=self._password)
-            self._connection.autocommit = self._autocommit
-            self._close_at = None if self._max_connection_age_in_seconds is None \
-                             else time.time() + self._max_connection_age_in_seconds
-        except:
-            self._connection = None
-            self._close_at = None
-        self._cursor = None
-
-    def is_usable(self):
-        """Return True if the connection is usable. False, otherwise."""
-        try:
-            self._connection.cursor().execute("SELECT 1")
-        except:
-            return False
-        else:
-            return True
-
-    def has_expired(self):
-        """Return True if the connection has expired. False, otherwise."""
-        return time.time() > self._close_at if self._close_at is not None else False
-
-    def open_cursor(self):
-        """Open a new cursor."""
-        self._cursor = self._connection.cursor()
-
-    def close_cursor(self):
-        """Close the cursor now."""
+    def __del__(self):
+        """Close the cursor when destructed."""
         self._cursor.close()
-        self._cursor = None
 
-    def is_connected(self):
-        """Return True if there is a connection to the database. False, otherwise."""
-        return self._connection is not None
+    def __enter__(self):
+        """Return itself when called from 'with' statement."""
+        return self
 
-    def has_cursor(self):
-        """Return True if the connection has an opened cursor. False, otherwise."""
-        return self._cursor is not None
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Close the cursor when called from 'with' statement."""
+        self._cursor.close()
 
-    def is_autocommit(self):
-        """Return True if autocommit mode is on. False, otherwise."""
-        return self._autocommit
+    def close(self):
+        """Close the cursor."""
+        self._cursor.close()
 
     def execute(self, operation, parameters=None):
-        """Execute an operation on the database."""
+        """Execute an operation."""
         self._cursor.execute(operation, parameters)
 
     def fetch_one(self):
@@ -82,6 +40,20 @@ class PostgreSQLConnection:
         """Fetch all (remaining) rows of a query result, returning a list of tuples."""
         return self._cursor.fetchall()
 
+class PGWizardConnection:
+    """Connection to a PostgreSQL database."""
+
+    def __init__(self, connection):
+        """Set connection attribute."""
+        self._connection = connection
+
+    def open_cursor(self):
+        """Return a cursor for the connection."""
+        return PGWizardCursor(self._connection)
+
+class PGWizardTransactionalConnection(PGWizardConnection):
+    """Transactional connection to a PostgreSQL database."""
+
     def commit(self):
         """Commit any pending transaction to the database."""
         self._connection.commit()
@@ -90,46 +62,114 @@ class PostgreSQLConnection:
         """Roll back to the start of any pending transaction."""
         self._connection.rollback()
 
-class PostgreSQLConnectionPool:
+class PGWizardConnectionPool:
     """Pool of connections to PostgreSQL databases."""
 
     def __init__(self):
-        """Set the dictionary that maps names to a list of connections."""
-        self._connections = {}
+        """Initialize the containers for connections."""
+        self._master = {}
+        self._slave = {}
 
-    def add_connection(self, name, connection):
-        """Add a connection to the pool."""
-        if name not in self._connections:
-            self._connections[name] = []
-        self._connections[name].append(connection)
+    def __del__(self):
+        """Close the connections when destructed."""
+        for master in self._master.values():
+            if master['connection']:
+                master['connection'].close()
+            if master['transactional_connection']:
+                master['transactional_connection'].close()
+        for slaves in self._slave.values():
+            for slave in slaves:
+                if slave['connection']:
+                    slave['connection'].close()
+                if slave['transactional_connection']:
+                    slave['transactional_connection'].close()
 
-    def refresh_connections(self):
-        """Refresh connections of the pool."""
-        for connections in self._connections.values():
-            for connection in connections:
-                if not connection.is_usable() or connection.has_expired():
-                    connection.connect()
+    def set_master_database_server(self, name, database, host, port, user, password):
+        """Set a master database server connection."""
+        self._master[name] = {
+                'database': database,
+                'host': host,
+                'port': port,
+                'user': user,
+                'password': password,
+                'connection': None,
+                'transactional_connection': None
+        }
 
-    def open_cursors(self):
-        """Open cursors for connections of the pool."""
-        for connections in self._connections.values():
-            for connection in connections:
-                if connection.is_connected():
-                    connection.open_cursor()
+    def add_slave_database_server(self, name, database, host, port, user, password):
+        """Add a slave database server connection."""
+        if name not in self._slave:
+            self._slave[name] = []
+        self._slave[name].append({
+            'database': database,
+            'host': host,
+            'port': port,
+            'user': user,
+            'password': password,
+            'connection': None,
+            'transactional_connection': None
+        })
 
-    def close_cursors(self):
-        """Close opened cursors for connections of the pool."""
-        for connections in self._connections.values():
-            for connection in connections:
-                if connection.has_cursor():
-                    connection.close_cursor()
+    def get_master_connection(self, name):
+        """Return the master database server connection."""
+        master = self._master[name]
+        try:
+            connection = master['connection']
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+        except:
+            connection = psycopg2.connect(database=master['database'], host=master['host'], port=master['port'],
+                                          user=master['user'], password=master['password'])
+            connection.autocommit = True
+            master['connection'] = connection
+        return PGWizardConnection(master['connection'])
 
-    def get_connection_for_writing_to(self, name):
-        """Return a connection identified by name for writing."""
-        return random.choice([connection for connection in self._connections[name] if connection._accept_writes and
-                              connection.has_cursor()])
+    def get_slave_connection(self, name):
+        """Return a random slave database server connection."""
+        slave = random.choice(self._slave[name])
+        try:
+            connection = slave['connection']
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+        except:
+            connection = psycopg2.connect(database=slave['database'], host=slave['host'], port=slave['port'],
+                                          user=slave['user'], password=slave['password'])
+            connection.autocommit = True
+            slave['connection'] = connection
+        return PGWizardConnection(slave['connection'])
 
-    def get_connection_for_reading_from(self, name):
-        """Return a connection identified by name for reading."""
-        return random.choice([connection for connection in self._connections[name] if connection._accept_reads and
-                              connection.has_cursor()])
+    def get_master_transactional_connection(self, name):
+        """Return the master database server transactional connection."""
+        master = self._master[name]
+        try:
+            transactional_connection = master['transactional_connection']
+            cursor = transactional_connection.cursor()
+            cursor.execute("SELECT 1")
+            transactional_connection.commit()
+            cursor.close()
+        except:
+            transactional_connection = psycopg2.connect(database=master['database'], host=master['host'],
+                                                        port=master['port'], user=master['user'],
+                                                        password=master['password'])
+            transactional_connection.autocommit = False
+            master['transactional_connection'] = transactional_connection
+        return PGWizardTransactionalConnection(master['transactional_connection'])
+
+    def get_slave_transactional_connection(self, name):
+        """Return a random slave database server transactional connection."""
+        slave = random.choice(self._slave[name])
+        try:
+            transactional_connection = slave['transactional_connection']
+            cursor = transactional_connection.cursor()
+            cursor.execute("SELECT 1")
+            transactional_connection.commit()
+            cursor.close()
+        except:
+            transactional_connection = psycopg2.connect(database=slave['database'], host=slave['host'],
+                                                        port=slave['port'], user=slave['user'],
+                                                        password=slave['password'])
+            transactional_connection.autocommit = False
+            slave['transactional_connection'] = transactional_connection
+        return PGWizardTransactionalConnection(slave['transactional_connection'])

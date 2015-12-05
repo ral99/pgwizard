@@ -1,2 +1,2 @@
-__all__ = ['PostgreSQLConnection', 'PostgreSQLConnectionPool']
-from .connection import PostgreSQLConnection, PostgreSQLConnectionPool
+__all__ = ['PGWizardConnectionPool']
+from .connection import PGWizardConnectionPool
