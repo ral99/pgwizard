@@ -73,7 +73,7 @@ class PGWizardConnectionPool:
         self._slave = {}
 
     def __del__(self):
-        """Close the connections when destructed."""
+        """Close the connections when deleted."""
         for master in self._master.values():
             if master['connection']:
                 master['connection'].close()
