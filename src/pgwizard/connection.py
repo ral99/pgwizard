@@ -125,9 +125,8 @@ class PGWizardConnectionPool:
             master['connection_test_expiration_time'] = now + self._connection_test_interval
             try:
                 connection = master['connection']
-                cursor = connection.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
             except:
                 connection = psycopg2.connect(database=master['database'], host=master['host'], port=master['port'],
                                               user=master['user'], password=master['password'])
@@ -144,9 +143,8 @@ class PGWizardConnectionPool:
             slave['connection_test_expiration_time'] = now + self._connection_test_interval
             try:
                 connection = slave['connection']
-                cursor = connection.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
             except:
                 connection = psycopg2.connect(database=slave['database'], host=slave['host'], port=slave['port'],
                                               user=slave['user'], password=slave['password'])
@@ -163,10 +161,9 @@ class PGWizardConnectionPool:
             master['transactional_connection_test_expiration_time'] = now + self._connection_test_interval
             try:
                 transactional_connection = master['transactional_connection']
-                cursor = transactional_connection.cursor()
-                cursor.execute("SELECT 1")
-                transactional_connection.commit()
-                cursor.close()
+                with transactional_connection:
+                    with transactional_connection.cursor() as cursor:
+                        cursor.execute("SELECT 1")
             except:
                 transactional_connection = psycopg2.connect(database=master['database'], host=master['host'],
                                                             port=master['port'], user=master['user'],
@@ -184,10 +181,9 @@ class PGWizardConnectionPool:
             slave['transactional_connection_test_expiration_time'] = now + self._connection_test_interval
             try:
                 transactional_connection = slave['transactional_connection']
-                cursor = transactional_connection.cursor()
-                cursor.execute("SELECT 1")
-                transactional_connection.commit()
-                cursor.close()
+                with transactional_connection:
+                    with transactional_connection.cursor() as cursor:
+                        cursor.execute("SELECT 1")
             except:
                 transactional_connection = psycopg2.connect(database=slave['database'], host=slave['host'],
                                                             port=slave['port'], user=slave['user'],
